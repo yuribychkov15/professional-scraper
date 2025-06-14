@@ -82,6 +82,7 @@ class LinkedInSearcher:
         session.mount("https://", adapter)
         return session
 
+    # different queries to search for the person
     def create_queries(self, row):
         name = row['clean_name']
         school = row['clean_school']
@@ -140,6 +141,27 @@ class ProminenceFilter:
         'ceo': 15, 'founder': 12, 'partner': 10,
         'president': 10, 'manager': 5, 'professional athlete': 10
     }
+    
+    @staticmethod
+    def calculate_confidence(row):
+        confidence = 0
+        title = str(row.get('title', '')).lower()
+        snippet = str(row.get('snippet', '')).lower()
+        name = str(row.get('clean_name', '')).lower()
+        grad_year = str(row.get('graduation_year', ''))
+
+        if "harvard" in title or "harvard" in snippet:
+            confidence += 30
+        if name in title:
+            confidence += 30
+        if grad_year and grad_year in snippet:
+            confidence += 20
+        if any(term in title or term in snippet for term in ["ceo", "founder", "president", "director"]):
+            confidence += 20
+
+        return confidence
+
+
     @staticmethod
     def calculate_score(row):
         combined = f"{row.get('title', '').lower()} {row.get('snippet', '').lower()}"
@@ -178,7 +200,7 @@ def main():
     if not api_key:
         raise ValueError("SERPAPI_API_KEY missing")
 
-    df = pd.read_csv("Baseball_roster.csv")
+    df = pd.read_csv("Men's_Sailing_roster.csv")
     df = DataProcessor.clean_data(df)
     df = df[df['clean_school'].str.contains("Harvard", case=False, na=False)]
 
@@ -186,11 +208,22 @@ def main():
     start_index, results_data = CheckpointManager.load()
     start_index += 1
 
+    seen_urls = set()
+
+
     for idx in range(start_index, len(df)):
         row = df.iloc[idx]
         print(f"\n🔍 Searching {idx+1}/{len(df)}: {row['clean_name']}")
         queries = searcher.create_queries(row)
         result = searcher.search_person(queries, row['clean_name'])
+
+        
+        if result and result.get('link') in seen_urls:
+            print(f"  ⚠️ Skipping duplicate LinkedIn URL: {result.get('link')}")
+            continue
+        if result and result.get('link'):
+            seen_urls.add(result.get('link'))
+
 
         record = {
             'name': row['name'],
@@ -213,6 +246,7 @@ def main():
     results_df['is_valid_match'] = results_df.apply(ProminenceFilter.is_valid_match, axis=1)
     valid_df = results_df[results_df['is_valid_match']].copy()
     valid_df['prominence_score'] = valid_df.apply(ProminenceFilter.calculate_score, axis=1)
+    valid_df['confidence_score'] = valid_df.apply(ProminenceFilter.calculate_confidence, axis=1)
 
     timestamp = int(time.time())
     # Removed Tier 1 output(f"tier1_top_prominent_{timestamp}.csv", index=False)
